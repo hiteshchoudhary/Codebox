@@ -2,7 +2,6 @@ import { Router } from 'express';
 import submissionsRouter from './submissions.js';
 import languagesRouter from './languages.js';
 import systemRouter from './system.js';
-import metricsRouter from './metrics.js';
 
 const router = Router();
 
@@ -12,8 +11,8 @@ router.use('/submissions', submissionsRouter);
 // Languages endpoint
 router.use('/languages', languagesRouter);
 
-// Metrics endpoint (Prometheus)
-router.use('/metrics', metricsRouter);
+// Note: GET /metrics is handled directly in api/server.js (src/api/metrics.js),
+// registered before authMiddleware.
 
 // System endpoints (statuses, about, workers, etc.)
 router.use('/', systemRouter);
