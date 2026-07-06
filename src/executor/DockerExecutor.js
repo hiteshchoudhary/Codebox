@@ -1,5 +1,4 @@
 import Docker from 'dockerode';
-import { Readable } from 'stream';
 import config from '../utils/config.js';
 import logger from '../utils/logger.js';
 import { getStatusById } from '../languages/index.js';
@@ -208,9 +207,9 @@ class DockerExecutor {
         ],
         ReadonlyPaths: ['/proc', '/sys'],
         Tmpfs: {
-          '/tmp': `rw,noexec,nosuid,size=64m`,
-          '/box': `rw,exec,nosuid,size=${boxSize}m`,
-          '/home': 'rw,noexec,nosuid,size=16m',
+          '/tmp': `rw,noexec,nosuid,size=64m,mode=1777`,
+          '/box': `rw,exec,nosuid,size=${boxSize}m,mode=1777`,
+          '/home': 'rw,noexec,nosuid,size=16m,mode=1777',
         },
         Binds: [],
       },
@@ -223,16 +222,54 @@ class DockerExecutor {
   }
 
   /**
+   * Write a file into the container via exec+stdin.
+   *
+   * container.putArchive() (docker cp) is rejected by the Docker daemon for any
+   * container created with ReadonlyRootfs: true, even when the destination is a
+   * writable tmpfs mount (e.g. /box) — so files must be written through a running
+   * exec session instead.
+   */
+  async writeFileToContainer(container, path, content) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
+
+    const exec = await container.exec({
+      Cmd: ['sh', '-c', `cat > '${path}'`],
+      AttachStdin: true,
+      AttachStdout: true,
+      AttachStderr: true,
+    });
+
+    return new Promise((resolve, reject) => {
+      exec.start({ hijack: true, stdin: true }, (err, stream) => {
+        if (err) return reject(err);
+
+        stream.on('end', async () => {
+          try {
+            const inspection = await exec.inspect();
+            if (inspection.ExitCode !== 0) {
+              return reject(new Error(`Failed to write file: ${path}`));
+            }
+            resolve();
+          } catch (e) {
+            reject(e);
+          }
+        });
+        stream.on('error', reject);
+
+        stream.write(buffer);
+        stream.end();
+      });
+    });
+  }
+
+  /**
    * Copy source code into the container
    */
   async copySourceCode(container, submission) {
     const { language, source_code } = submission;
     const fileName = language.source_file;
 
-    // Create a tar archive with the source file
-    const tarStream = this.createTarStream(fileName, source_code);
-
-    await container.putArchive(tarStream, { path: '/box' });
+    await this.writeFileToContainer(container, `/box/${fileName}`, source_code);
   }
 
   /**
@@ -244,9 +281,7 @@ class DockerExecutor {
     try {
       const zipBuffer = Buffer.from(additional_files, 'base64');
 
-      // Copy ZIP file into container via tar stream
-      const tarStream = this.createTarStream('_additional.zip', zipBuffer);
-      await container.putArchive(tarStream, { path: '/box' });
+      await this.writeFileToContainer(container, '/box/_additional.zip', zipBuffer);
 
       // Check for path traversal and extract ZIP inside container
       const checkResult = await this.runCommand(
@@ -287,63 +322,6 @@ class DockerExecutor {
       });
       throw new Error(`Failed to copy additional files: ${error.message}`);
     }
-  }
-
-  /**
-   * Create a simple tar stream with a single file
-   */
-  createTarStream(fileName, content) {
-    const contentBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
-    const fileNameBuffer = Buffer.from(fileName);
-
-    // TAR header (512 bytes)
-    const header = Buffer.alloc(512, 0);
-
-    // File name (0-99)
-    fileNameBuffer.copy(header, 0, 0, Math.min(fileNameBuffer.length, 100));
-
-    // File mode (100-107) - 0644 (world readable)
-    Buffer.from('0000644\0').copy(header, 100);
-
-    // UID (108-115) - root
-    Buffer.from('0000000\0').copy(header, 108);
-
-    // GID (116-123) - root
-    Buffer.from('0000000\0').copy(header, 116);
-
-    // File size in octal (124-135)
-    const sizeOctal = contentBuffer.length.toString(8).padStart(11, '0') + '\0';
-    Buffer.from(sizeOctal).copy(header, 124);
-
-    // Modification time (136-147)
-    const mtime = Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0';
-    Buffer.from(mtime).copy(header, 136);
-
-    // Checksum placeholder (148-155) - spaces
-    Buffer.from('        ').copy(header, 148);
-
-    // Type flag (156) - '0' for regular file
-    header[156] = 48; // ASCII '0'
-
-    // Calculate checksum
-    let checksum = 0;
-    for (let i = 0; i < 512; i++) {
-      checksum += header[i];
-    }
-    const checksumOctal = checksum.toString(8).padStart(6, '0') + '\0 ';
-    Buffer.from(checksumOctal).copy(header, 148);
-
-    // Content padding (512-byte blocks)
-    const paddingSize = 512 - (contentBuffer.length % 512);
-    const contentPadding = paddingSize < 512 ? Buffer.alloc(paddingSize, 0) : Buffer.alloc(0);
-
-    // End of archive (two 512-byte zero blocks)
-    const endBlocks = Buffer.alloc(1024, 0);
-
-    // Combine all parts
-    const tarBuffer = Buffer.concat([header, contentBuffer, contentPadding, endBlocks]);
-
-    return Readable.from(tarBuffer);
   }
 
   /**
