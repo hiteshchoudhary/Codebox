@@ -50,9 +50,12 @@ Create the fastest, most reliable code execution service that seamlessly replace
 - Same error codes and status messages
 - Support for all Judge0 query parameters (base64_encoded, wait, fields, etc.)
 
-**NOT Implementing:**
-- Webhook/callback URLs (users poll for results)
+**Not Implementing:**
 - Persistent submission history (stateless, cache-only storage)
+
+> Note: webhook/callback URLs (`callback_url`) *are* implemented (with SSRF
+> protection on the target URL) — this PRD predates that addition and is kept
+> here as a historical planning document rather than a living spec.
 
 ### 2. Language Support
 

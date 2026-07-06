@@ -13,7 +13,7 @@
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| **API (via Nginx)** | http://localhost:80 | Main API through reverse proxy |
+| **API (via Caddy)** | http://localhost:80 | Main API through reverse proxy |
 | **API (direct)** | http://localhost:3000 | Direct API access |
 | **Prometheus** | http://localhost:9090 | Prometheus dashboard |
 | **Grafana** | http://localhost:3001 | Grafana dashboards (admin/admin) |
@@ -102,6 +102,18 @@ curl -X POST "http://localhost:3000/submissions?wait=true" \
 | 62 | Java (OpenJDK 17) |
 | 63 | JavaScript (Node.js 18) |
 | 71 | Python (3.8) |
+| 74 | TypeScript (5.0) |
+| 89 | Multi-file program |
+
+### RapidAPI / Judge0-CE-Extra aliases
+
+These map to the native language configs above rather than distinct runtimes:
+
+| RapidAPI ID | Aliases to |
+|-------------|------------|
+| 92 | Python (71) |
+| 93, 102 | JavaScript (63) |
+| 94 | TypeScript (74) |
 
 ---
 
