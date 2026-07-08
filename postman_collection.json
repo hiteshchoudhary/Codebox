@@ -327,6 +327,21 @@
             },
             "description": "Create multiple submissions at once"
           }
+        },
+        {
+          "name": "Get multiple batch submissions at once",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/submissions/batch?tokens&base64_encoded=false&fields=token,stdout,stderr,status_id,language_id",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            
+            "description": "Get multiple submissions at once by tokens"
+          }
         }
       ]
     },
