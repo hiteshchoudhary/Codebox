@@ -9,6 +9,19 @@ async function main() {
     environment: config.server.nodeEnv,
   });
 
+  // Startup security warnings
+  if (config.server.nodeEnv === 'production') {
+    if (config.auth.tokens.length === 0) {
+      logger.warn('AUTH_TOKEN is not set. All endpoints are unprotected.');
+    }
+    if (config.cors.allowedOrigins.length === 0) {
+      logger.warn('ALLOWED_ORIGINS is not set. CORS is wide open.');
+    }
+    if (!config.trustProxy) {
+      logger.warn('TRUST_PROXY is not set. req.ip and rate limiting may be incorrect behind a reverse proxy.');
+    }
+  }
+
   try {
     // Initialize Redis and BullMQ queue
     await initializeQueue();

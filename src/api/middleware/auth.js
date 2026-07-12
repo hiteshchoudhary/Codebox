@@ -1,4 +1,20 @@
+import crypto from 'crypto';
 import config from '../../utils/config.js';
+
+/**
+ * Timing-safe string comparison using HMAC to prevent timing attacks.
+ */
+function safeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') {
+    return false;
+  }
+
+  const key = Buffer.alloc(32);
+  const hmacA = crypto.createHmac('sha256', key).update(a).digest();
+  const hmacB = crypto.createHmac('sha256', key).update(b).digest();
+
+  return crypto.timingSafeEqual(hmacA, hmacB);
+}
 
 /**
  * Authentication middleware
@@ -23,7 +39,10 @@ export function authMiddleware(req, res, next) {
     });
   }
 
-  if (!config.auth.tokens.includes(token)) {
+  // Use timing-safe comparison for each configured token
+  const isValid = config.auth.tokens.some((validToken) => safeCompare(token, validToken));
+
+  if (!isValid) {
     return res.status(401).json({
       error: 'Authentication failed',
       message: 'Invalid authentication token',

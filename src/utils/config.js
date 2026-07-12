@@ -58,6 +58,12 @@ const config = {
     baseDir: process.env.FC_BASE_DIR || '/var/lib/codebox/firecracker',
     kernelPath: process.env.FC_KERNEL_PATH || '/var/lib/codebox/firecracker/kernels/vmlinux',
   },
+
+  cors: {
+    allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean),
+  },
+
+  trustProxy: process.env.TRUST_PROXY || '',
 };
 
 export default config;
