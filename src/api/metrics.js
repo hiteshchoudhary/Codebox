@@ -20,21 +20,6 @@ const activeWorkers = new client.Gauge({
   registers: [register],
 });
 
-const submissionsTotal = new client.Counter({
-  name: 'codebox_submissions_total',
-  help: 'Total number of submissions processed',
-  labelNames: ['status', 'language'],
-  registers: [register],
-});
-
-const submissionDuration = new client.Histogram({
-  name: 'codebox_submission_duration_seconds',
-  help: 'Duration of submission execution in seconds',
-  labelNames: ['language'],
-  buckets: [0.1, 0.5, 1, 2, 5, 10, 30],
-  registers: [register],
-});
-
 const queueProcessing = new client.Gauge({
   name: 'codebox_queue_processing',
   help: 'Number of submissions currently being processed',
@@ -71,17 +56,10 @@ async function updateQueueMetrics() {
   }
 }
 
-export function recordSubmission(status, language, durationSeconds) {
-  submissionsTotal.inc({ status, language });
-  if (durationSeconds !== undefined) {
-    submissionDuration.observe({ language }, durationSeconds);
-  }
-}
-
 export async function metricsHandler(req, res) {
   await updateQueueMetrics();
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 }
 
-export default { metricsHandler, recordSubmission };
+export default { metricsHandler };
