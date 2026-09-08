@@ -1,5 +1,4 @@
 import Docker from 'dockerode';
-import { Readable } from 'stream';
 import config from '../utils/config.js';
 import logger from '../utils/logger.js';
 import { getStatusById } from '../languages/index.js';
@@ -207,10 +206,14 @@ class DockerExecutor {
           '/sys/firmware', '/sys/devices',
         ],
         ReadonlyPaths: ['/proc', '/sys'],
+        // mode=1777 is required: every language image runs as a non-root user
+        // (see docker/images/*/Dockerfile), and a tmpfs defaults to root-owned
+        // 0755 — without this the sandbox user cannot write its source file or
+        // its compile artifacts into /box.
         Tmpfs: {
-          '/tmp': `rw,noexec,nosuid,size=64m`,
-          '/box': `rw,exec,nosuid,size=${boxSize}m`,
-          '/home': 'rw,noexec,nosuid,size=16m',
+          '/tmp': 'rw,noexec,nosuid,size=64m,mode=1777',
+          '/box': `rw,exec,nosuid,size=${boxSize}m,mode=1777`,
+          '/home': 'rw,noexec,nosuid,size=16m,mode=1777',
         },
         Binds: [],
       },
@@ -227,12 +230,39 @@ class DockerExecutor {
    */
   async copySourceCode(container, submission) {
     const { language, source_code } = submission;
-    const fileName = language.source_file;
 
-    // Create a tar archive with the source file
-    const tarStream = this.createTarStream(fileName, source_code);
+    await this.writeFileToBox(container, language.source_file, source_code);
+  }
 
-    await container.putArchive(tarStream, { path: '/box' });
+  /**
+   * Write a single file into /box from inside the container.
+   *
+   * putArchive() cannot be used for this. Docker resolves archive destination
+   * paths against the container's rootfs and does not follow tmpfs mounts, so
+   * an archive sent to /box is extracted into the rootfs directory that the
+   * tmpfs is mounted over -- invisible to any process in the container. With
+   * ReadonlyRootfs set, the daemon refuses the write outright:
+   *   (HTTP code 400) container rootfs is marked read-only
+   * Piping the content in over exec stdin writes to the real tmpfs instead, and
+   * works while the rootfs stays read-only.
+   */
+  async writeFileToBox(container, fileName, content) {
+    const contentBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
+
+    // File names come from the language config, never from user input.
+    const result = await this.runCommand(
+      container,
+      `base64 -d > '/box/${fileName}'`,
+      null,
+      30,
+      contentBuffer.toString('base64')
+    );
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Failed to write ${fileName} into container: ${result.stderr || `exit code ${result.exitCode}`}`
+      );
+    }
   }
 
   /**
@@ -244,9 +274,7 @@ class DockerExecutor {
     try {
       const zipBuffer = Buffer.from(additional_files, 'base64');
 
-      // Copy ZIP file into container via tar stream
-      const tarStream = this.createTarStream('_additional.zip', zipBuffer);
-      await container.putArchive(tarStream, { path: '/box' });
+      await this.writeFileToBox(container, '_additional.zip', zipBuffer);
 
       // Check for path traversal and extract ZIP inside container
       const checkResult = await this.runCommand(
@@ -287,63 +315,6 @@ class DockerExecutor {
       });
       throw new Error(`Failed to copy additional files: ${error.message}`);
     }
-  }
-
-  /**
-   * Create a simple tar stream with a single file
-   */
-  createTarStream(fileName, content) {
-    const contentBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
-    const fileNameBuffer = Buffer.from(fileName);
-
-    // TAR header (512 bytes)
-    const header = Buffer.alloc(512, 0);
-
-    // File name (0-99)
-    fileNameBuffer.copy(header, 0, 0, Math.min(fileNameBuffer.length, 100));
-
-    // File mode (100-107) - 0644 (world readable)
-    Buffer.from('0000644\0').copy(header, 100);
-
-    // UID (108-115) - root
-    Buffer.from('0000000\0').copy(header, 108);
-
-    // GID (116-123) - root
-    Buffer.from('0000000\0').copy(header, 116);
-
-    // File size in octal (124-135)
-    const sizeOctal = contentBuffer.length.toString(8).padStart(11, '0') + '\0';
-    Buffer.from(sizeOctal).copy(header, 124);
-
-    // Modification time (136-147)
-    const mtime = Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0';
-    Buffer.from(mtime).copy(header, 136);
-
-    // Checksum placeholder (148-155) - spaces
-    Buffer.from('        ').copy(header, 148);
-
-    // Type flag (156) - '0' for regular file
-    header[156] = 48; // ASCII '0'
-
-    // Calculate checksum
-    let checksum = 0;
-    for (let i = 0; i < 512; i++) {
-      checksum += header[i];
-    }
-    const checksumOctal = checksum.toString(8).padStart(6, '0') + '\0 ';
-    Buffer.from(checksumOctal).copy(header, 148);
-
-    // Content padding (512-byte blocks)
-    const paddingSize = 512 - (contentBuffer.length % 512);
-    const contentPadding = paddingSize < 512 ? Buffer.alloc(paddingSize, 0) : Buffer.alloc(0);
-
-    // End of archive (two 512-byte zero blocks)
-    const endBlocks = Buffer.alloc(1024, 0);
-
-    // Combine all parts
-    const tarBuffer = Buffer.concat([header, contentBuffer, contentPadding, endBlocks]);
-
-    return Readable.from(tarBuffer);
   }
 
   /**
