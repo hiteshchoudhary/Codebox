@@ -48,17 +48,20 @@ CodeBox is a self-hosted code execution service that powers the coding challenge
 
 ## Running CodeBox
 
-CodeBox runs in three ways. Pick the row that matches your situation.
+Pick the row that matches your situation.
 
-| Mode | You need | URL you end up with | TLS |
-|------|----------|---------------------|-----|
-| **1. Local** | A laptop with Docker | `http://localhost:3000` | none |
-| **2. Server, no domain** | A server + its IP | `http://<server-ip>` | none |
-| **3. Server + domain** | A server + a DNS A record | `https://codebox.example.com` | automatic |
+| Mode | You need | URL you end up with | TLS | Build? |
+|------|----------|---------------------|-----|--------|
+| **Fastest path** | A server + Docker | `http://<server-ip>` | none | no — pulls from Docker Hub |
+| **1. Local** | A laptop with Docker | `http://localhost:3000` | none | yes |
+| **2. Server, no domain** | A server + its IP | `http://<server-ip>` | none | yes |
+| **3. Server + domain** | A server + a DNS A record | `https://codebox.example.com` | automatic | yes |
 
-Modes 2 and 3 use the same stack and the same commands. The only difference is
-whether `DOMAIN` is set in `.env`. You can start on mode 2 and move to mode 3
-later without rebuilding anything.
+If you just want CodeBox running on a VPS and are not changing the code, use
+the **fastest path** — one file, no clone, no build. Modes 2 and 3 build from
+source and are otherwise identical to each other; the only difference between
+them is whether `DOMAIN` is set in `.env`, and you can move from one to the
+other later without rebuilding.
 
 ---
 
@@ -94,6 +97,68 @@ curl -X POST "http://localhost:3000/submissions?wait=true" \
 ```
 
 The API is on port 3000 directly — Caddy is not involved in this mode.
+
+---
+
+### Fastest path — one file, no clone, no build
+
+Prebuilt images are published to Docker Hub, and the production stack needs
+**no language images**: the worker image already bundles gcc, JDK 17, Python,
+Node and TypeScript, and isolate runs the code inside that container. So a
+whole deployment is one file plus a `.env`.
+
+On a fresh server with Docker installed:
+
+```bash
+mkdir -p /opt/codebox && cd /opt/codebox
+
+# Grab the single-file compose
+curl -fsSLO https://raw.githubusercontent.com/hiteshchoudhary/Codebox/main/docker-compose.hub.yml
+mv docker-compose.hub.yml docker-compose.yml
+
+# Generate secrets and write .env
+cat > .env <<EOF
+AUTH_TOKEN=$(openssl rand -hex 32)
+METRICS_TOKEN=$(openssl rand -hex 16)
+GRAFANA_PASSWORD=$(openssl rand -hex 16)
+
+# Leave DOMAIN blank for plain HTTP on this server's IP.
+# Set it to a domain with an A record here for automatic HTTPS.
+DOMAIN=
+
+# Size these to the server. WORKER_CPUS must not exceed its vCPU count.
+WORKER_CPUS=1.5
+WORKER_MEMORY=4G
+WORKER_CONCURRENCY=2
+EOF
+
+docker compose up -d
+```
+
+Then check it and grab your token:
+
+```bash
+curl http://localhost/health
+grep AUTH_TOKEN .env
+```
+
+`docker-compose.hub.yml` carries the Caddy and Prometheus configs inline as
+Compose `configs`, so there are genuinely no other files to copy. If you would
+rather paste than curl, open the file on GitHub and paste it straight into
+`docker-compose.yml` on the server — it needs Docker Compose v2.23 or newer
+(`docker compose version`).
+
+To upgrade later:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Pin a release instead of tracking `latest` by adding `CODEBOX_VERSION=v1.2.3`
+to `.env`.
+
+> This path uses the prebuilt images. Build from source instead — modes 2 and 3
+> below — when you have changed the code.
 
 ---
 
@@ -343,6 +408,36 @@ cd /opt/codebox
 - [ ] Firewall enabled (UFW)
 - [ ] Fail2Ban installed
 - [ ] Auto-updates enabled
+
+---
+
+## Publishing images (maintainers)
+
+`.github/workflows/publish-images.yml` builds and pushes both images to Docker
+Hub on every push to `main`, on every `v*` tag, and on manual dispatch:
+
+| Image | From |
+|-------|------|
+| `hiteshchoudhary/codebox-api` | `docker/api/Dockerfile` |
+| `hiteshchoudhary/codebox-worker` | `docker/worker/Dockerfile` |
+
+Tags pushed: `latest` (main), the git tag (`v1.2.3`), and the short SHA.
+
+**One-time setup.** Add two repository secrets under
+*Settings → Secrets and variables → Actions*:
+
+| Secret | Value |
+|--------|-------|
+| `DOCKERHUB_USERNAME` | your Docker Hub username |
+| `DOCKERHUB_TOKEN` | an access token from [hub.docker.com/settings/security](https://hub.docker.com/settings/security), scope **Read & Write** — a token, not your password |
+
+Both repositories must exist on Docker Hub (or the account must allow
+auto-creation) before the first push.
+
+Images are built for **linux/amd64 only**. `docker/worker/Dockerfile` hardcodes
+`x86_64-linux-gnu` and `java-17-openjdk-amd64`, and every mainstream VPS is
+amd64 — but this means the published images will not run on an ARM server or
+an Apple Silicon Mac.
 
 ---
 
