@@ -46,92 +46,204 @@ CodeBox is a self-hosted code execution service that powers the coding challenge
 
 ---
 
-## Local Development
+## Running CodeBox
 
-### Prerequisites
+CodeBox runs in three ways. Pick the row that matches your situation.
 
-- Docker Desktop
-- Node.js 20+
+| Mode | You need | URL you end up with | TLS |
+|------|----------|---------------------|-----|
+| **1. Local** | A laptop with Docker | `http://localhost:3000` | none |
+| **2. Server, no domain** | A server + its IP | `http://<server-ip>` | none |
+| **3. Server + domain** | A server + a DNS A record | `https://codebox.example.com` | automatic |
 
-### Quick Start
+Modes 2 and 3 use the same stack and the same commands. The only difference is
+whether `DOMAIN` is set in `.env`. You can start on mode 2 and move to mode 3
+later without rebuilding anything.
+
+---
+
+### Mode 1 — Local development
+
+Runs the API, a worker and Redis on your machine using the Docker executor.
+No domain, no reverse proxy, no SSL.
+
+**Prerequisites:** Docker Desktop, Node.js 20+
 
 ```bash
-# Clone the repo
-git clone https://github.com/chaicode/codebox.git
-cd codebox
+git clone https://github.com/hiteshchoudhary/Codebox.git
+cd Codebox
 
-# Install dependencies
 npm install
 
-# Build language runtime images
+# Build the language runtime images (python, node, gcc, java, ...)
 ./scripts/build-images.sh
 
-# Start services (API + Worker + Redis)
-docker-compose up -d
+# Start API + worker + Redis
+docker compose up -d
 
-# Verify it's running
 curl http://localhost:3000/health
 ```
 
-### Test Code Execution
+The dev stack ships with the token `dev-token` already set:
 
 ```bash
-# Run Python code
 curl -X POST "http://localhost:3000/submissions?wait=true" \
   -H "Content-Type: application/json" \
   -H "X-Auth-Token: dev-token" \
   -d '{"source_code": "print(\"Chai aur Code!\")", "language_id": 71}'
 ```
 
+The API is on port 3000 directly — Caddy is not involved in this mode.
+
 ---
 
-## Production Deployment (DigitalOcean)
+### Mode 2 — Server without a domain (IP only, no SSL)
 
-### Recommended Droplet Size
-
-| Load | Droplet | Specs | Cost |
-|------|---------|-------|------|
-| **Light** (< 100 submissions/hr) | Basic | 2 vCPU, 4GB RAM | $24/mo |
-| **Medium** (< 1000 submissions/hr) | General Purpose | 4 vCPU, 8GB RAM | $48/mo |
-| **Heavy** (> 1000 submissions/hr) | CPU-Optimized | 8 vCPU, 16GB RAM | $96/mo |
-
-> **Tip:** Start with 4GB RAM. The worker concurrency can be tuned via `WORKER_CONCURRENCY` env variable. For Firecracker support, choose a droplet with dedicated vCPU (not shared).
-
-### One-Command Setup
+Use this when you have a VPS but no domain yet, or you are running CodeBox on a
+private network. CodeBox is served as plain HTTP on port 80 of the server's IP.
+**No DNS record and no certificate are required.**
 
 ```bash
-# SSH into your droplet
-ssh root@your-droplet-ip
+ssh root@<server-ip>
 
-# Clone and setup
-git clone https://github.com/chaicode/codebox.git /opt/codebox
+git clone https://github.com/hiteshchoudhary/Codebox.git /opt/codebox
 cd /opt/codebox
 
-# Run setup with your domain
-./scripts/setup-production.sh api.yourdomain.com
+# Run setup with NO argument -> IP mode
+./scripts/setup-production.sh
 ```
 
-The script automatically:
-1. Installs Docker & dependencies
-2. Configures firewall (ports 22, 80, 443)
-3. Detects Firecracker support (uses it if available)
-4. Generates secure API tokens
-5. Sets up Caddy with auto-SSL
-6. Builds and starts all services
+The script installs Docker, opens the firewall, generates an API token, builds
+the images and starts everything. When it finishes it prints your URL and token.
 
-### After Setup
+**Doing it by hand instead:**
 
+```bash
+cp .env.example .env
+# Set AUTH_TOKEN. Leave DOMAIN blank -- that is what selects IP mode.
+nano .env
+
+docker compose -f docker-compose.prod.yml up -d --build
 ```
-========================================
-  Setup Complete!
-========================================
 
-Domain:        https://api.yourdomain.com
-API Token:     <your-secure-token>
-Grafana Pass:  <your-grafana-password>
+Verify from your own machine:
 
-Test: curl https://api.yourdomain.com/health
+```bash
+curl http://<server-ip>/health
+
+curl -X POST "http://<server-ip>/submissions?wait=true" \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: <your-token>" \
+  -d '{"source_code": "print(2+2)", "language_id": 71}'
 ```
+
+> **Note the trade-off.** Without TLS, requests and your `X-Auth-Token` cross
+> the network in cleartext. That is fine for a private network, an internal
+> tool, or a staging box. Do not put a public production frontend on it —
+> use mode 3 instead, which is a one-line change.
+
+---
+
+### Mode 3 — Server with a domain and HTTPS
+
+Same stack as mode 2, plus a certificate. Caddy obtains and renews it from
+Let's Encrypt automatically — there is no certbot step and no cron job.
+
+**Before you start,** point an `A` record at the server and confirm it resolves:
+
+```bash
+dig +short codebox.example.com     # must print your server's IP
+```
+
+Ports **80 and 443** must both be reachable from the internet. Port 80 is not
+optional — Let's Encrypt uses it to validate the domain. Check your provider's
+panel firewall (Hostinger, DigitalOcean, AWS security groups) as well as `ufw`.
+
+```bash
+ssh root@<server-ip>
+
+git clone https://github.com/hiteshchoudhary/Codebox.git /opt/codebox
+cd /opt/codebox
+
+# Pass the domain as the argument -> HTTPS mode
+./scripts/setup-production.sh codebox.example.com
+```
+
+**Doing it by hand instead:**
+
+```bash
+cp .env.example .env
+# Set AUTH_TOKEN, and set DOMAIN=codebox.example.com
+nano .env
+
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Verify:
+
+```bash
+curl https://codebox.example.com/health
+```
+
+HTTP is redirected to HTTPS automatically.
+
+---
+
+### Switching from mode 2 to mode 3 later
+
+Nothing is rebuilt and no data is lost:
+
+```bash
+# 1. Point an A record at the server, wait for it to resolve
+dig +short codebox.example.com
+
+# 2. Set the domain
+nano .env                 # DOMAIN=codebox.example.com
+
+# 3. Recreate Caddy
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Caddy picks up the domain, requests a certificate and starts serving HTTPS
+within a few seconds. To go back to IP mode, blank out `DOMAIN` and re-run
+the same command.
+
+---
+
+### How the two server modes actually differ
+
+One variable. `docker-compose.prod.yml` turns `DOMAIN` into Caddy's site
+address:
+
+```yaml
+- SITE_ADDRESS=${DOMAIN:-:80}
+```
+
+| `DOMAIN` in `.env` | Caddy site address | Result |
+|--------------------|--------------------|--------|
+| blank or absent | `:80` | Serves HTTP on every IP and hostname. Caddy never requests a certificate and never binds 443. |
+| `codebox.example.com` | `codebox.example.com` | Binds 80 and 443, obtains a certificate, redirects HTTP to HTTPS. |
+
+Caddy only attempts certificate issuance when the site address carries a
+hostname, so IP mode cannot fail on a DNS or ACME error.
+
+---
+
+### Server sizing
+
+| Load | Specs | Notes |
+|------|-------|-------|
+| **Light** (< 100 submissions/hr) | 2 vCPU, 4GB RAM | Set `WORKER_CPUS=1.5`, `WORKER_MEMORY=3G` |
+| **Medium** (< 1000 submissions/hr) | 4 vCPU, 8GB RAM | Defaults in `.env.example` fit here |
+| **Heavy** (> 1000 submissions/hr) | 8 vCPU, 16GB RAM | Raise `WORKER_CPUS`, `WORKER_MEMORY`, `WORKER_CONCURRENCY` |
+
+> `WORKER_CPUS` must never exceed the host's vCPU count — Docker refuses to
+> start the container with `Range of CPUs is from 0.01 to N.00`. All resource
+> limits are tunable in `.env`; see the block at the bottom of `.env.example`.
+
+> For Firecracker support, choose a host with dedicated vCPUs and nested
+> virtualisation (`/dev/kvm` must exist). Most shared VPS plans do not offer
+> it — CodeBox falls back to isolate or Docker automatically.
 
 ---
 
@@ -215,7 +327,11 @@ sudo chown -R deploy:deploy /opt/codebox
 cd /opt/codebox
 
 # Run production setup
+# With a domain (HTTPS):
 ./scripts/setup-production.sh api.yourdomain.com
+
+# Or without one (plain HTTP on this server's IP):
+./scripts/setup-production.sh
 ```
 
 ### Quick Security Checklist
@@ -293,11 +409,15 @@ cd /opt/codebox
 
 ### Production
 
-| Service | URL |
-|---------|-----|
-| API | https://your-domain.com |
-| Prometheus | http://localhost:9090 (SSH tunnel) |
-| Grafana | http://localhost:3001 (SSH tunnel) |
+| Service | URL (mode 2, no domain) | URL (mode 3, with domain) |
+|---------|-------------------------|---------------------------|
+| API | http://\<server-ip\> | https://your-domain.com |
+| Health Check | http://\<server-ip\>/health | https://your-domain.com/health |
+| Prometheus | http://localhost:9090 (SSH tunnel) | same |
+| Grafana | http://localhost:3001 (SSH tunnel) | same |
+
+Prometheus and Grafana are never published to the internet in either mode —
+reach them through an SSH tunnel.
 
 **Access Grafana via SSH tunnel:**
 ```bash
@@ -311,9 +431,12 @@ ssh -L 3001:localhost:3001 user@your-server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_TOKEN` | - | API authentication token |
-| `EXECUTOR_TYPE` | `auto` | `auto`, `docker`, or `firecracker` |
-| `WORKER_CONCURRENCY` | `4` | Parallel workers |
+| `AUTH_TOKEN` | - | **Required.** API authentication token. Compose refuses to start without it. |
+| `DOMAIN` | blank | Blank = plain HTTP on the server IP. Set = automatic HTTPS for that domain. |
+| `EXECUTOR_TYPE` | `auto` | `auto`, `isolate`, `docker`, or `firecracker` |
+| `WORKER_CONCURRENCY` | `4` (dev) / `2` (prod) | Parallel executions per worker |
+| `WORKER_CPUS` | `1.5` | Must not exceed the host's vCPU count |
+| `WORKER_MEMORY` | `4G` | Worker container memory limit |
 | `DEFAULT_CPU_TIME_LIMIT` | `5` | Seconds |
 | `DEFAULT_MEMORY_LIMIT` | `128000` | KB |
 
