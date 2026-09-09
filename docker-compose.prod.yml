@@ -5,8 +5,11 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      - DOMAIN=${DOMAIN:-localhost}
-      - METRICS_TOKEN=${METRICS_TOKEN:-}
+      # Blank/unset DOMAIN => ":80" => plain HTTP on the server's IP, no SSL.
+      - SITE_ADDRESS=${DOMAIN:-:80}
+      # Must be non-empty: Caddy's header matcher fails to parse on a blank
+      # value and the container crashloops with "malformed header matcher".
+      - "METRICS_TOKEN=${METRICS_TOKEN:?METRICS_TOKEN must be set (generate one with openssl rand -hex 16)}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -27,7 +30,7 @@ services:
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
-      - AUTH_TOKEN=${AUTH_TOKEN:?AUTH_TOKEN must be set — an empty token disables auth entirely}
+      - "AUTH_TOKEN=${AUTH_TOKEN:?AUTH_TOKEN must be set - an empty token disables auth entirely}"
       - PORT=3000
       - BODY_LIMIT=50mb
       - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-200}

@@ -1,8 +1,14 @@
 #!/bin/bash
 
-# CodeBox Production Setup Script for DigitalOcean
-# Usage: ./scripts/setup-production.sh <domain>
-# Example: ./scripts/setup-production.sh api.codebox.example.com
+# CodeBox Production Setup Script
+# Usage: ./scripts/setup-production.sh [domain]
+#
+#   With a domain:    ./scripts/setup-production.sh api.codebox.example.com
+#                     Caddy obtains a Let's Encrypt certificate and serves HTTPS.
+#                     Requires an A record already pointing at this server.
+#
+#   Without a domain: ./scripts/setup-production.sh
+#                     Serves plain HTTP on the server's IP. No DNS, no SSL.
 
 set -e
 
@@ -11,22 +17,37 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Check arguments
-if [ -z "$1" ]; then
-    echo -e "${RED}Error: Domain is required${NC}"
-    echo ""
-    echo "Usage: $0 <domain>"
-    echo "Example: $0 api.codebox.example.com"
-    exit 1
-fi
+# Domain is optional. Without it, CodeBox serves plain HTTP on this server's IP.
+DOMAIN="${1:-}"
 
-DOMAIN=$1
+if [ -n "$DOMAIN" ]; then
+    MODE="domain"
+    # Detect the server IP anyway, for the closing summary.
+    SERVER_IP="${SERVER_IP:-$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')}"
+    BASE_URL="https://${DOMAIN}"
+else
+    MODE="ip"
+    SERVER_IP="${SERVER_IP:-$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')}"
+    if [ -z "$SERVER_IP" ]; then
+        echo -e "${RED}Error: could not determine this server's IP address.${NC}"
+        echo "Pass a domain explicitly, or set SERVER_IP before running:"
+        echo "  SERVER_IP=203.0.113.10 $0"
+        exit 1
+    fi
+    BASE_URL="http://${SERVER_IP}"
+fi
 
 echo "========================================"
 echo "  CodeBox Production Setup"
 echo "========================================"
 echo ""
-echo -e "Domain: ${GREEN}$DOMAIN${NC}"
+if [ "$MODE" = "domain" ]; then
+    echo -e "Mode:   ${GREEN}domain + automatic HTTPS${NC}"
+    echo -e "Domain: ${GREEN}$DOMAIN${NC}"
+else
+    echo -e "Mode:   ${YELLOW}IP only, plain HTTP (no domain, no SSL)${NC}"
+    echo -e "Address:${GREEN} $SERVER_IP${NC}"
+fi
 echo ""
 
 # Check if running as root
@@ -136,10 +157,12 @@ fi
 echo -e "${GREEN}[6/7] Creating configuration...${NC}"
 AUTH_TOKEN=$(openssl rand -hex 32)
 GRAFANA_PASSWORD=$(openssl rand -hex 16)
+METRICS_TOKEN=$(openssl rand -hex 16)
 
 cat > .env << EOF
 # Production Configuration
 NODE_ENV=production
+# Blank => Caddy serves plain HTTP on this server's IP (no SSL).
 DOMAIN=${DOMAIN}
 
 # Authentication
@@ -154,13 +177,18 @@ WORKER_CONCURRENCY=4
 # Grafana
 GRAFANA_PASSWORD=${GRAFANA_PASSWORD}
 
+# Guards /metrics/* at the proxy. Must be non-empty or Caddy will not start.
+METRICS_TOKEN=${METRICS_TOKEN}
+
 # Redis
 REDIS_URL=redis://redis:6379
 EOF
 
 echo -e "${GREEN}✓ Configuration created${NC}"
 
-# Caddyfile uses ${DOMAIN} env var directly, no need to modify it
+# Caddyfile reads SITE_ADDRESS, which docker-compose derives from DOMAIN:
+# blank DOMAIN becomes ":80" (plain HTTP on the server IP), a set DOMAIN
+# becomes the hostname and Caddy provisions a certificate for it.
 
 # Step 7: Build and start services
 echo -e "${GREEN}[7/7] Building and starting services...${NC}"
@@ -179,7 +207,16 @@ echo "========================================"
 echo -e "  ${GREEN}Setup Complete!${NC}"
 echo "========================================"
 echo ""
-echo -e "Domain:        ${GREEN}https://${DOMAIN}${NC}"
+if [ "$MODE" = "domain" ]; then
+    echo -e "URL:           ${GREEN}${BASE_URL}${NC}"
+    echo -e "TLS:           ${GREEN}automatic (Let's Encrypt)${NC}"
+else
+    echo -e "URL:           ${GREEN}${BASE_URL}${NC}"
+    echo -e "TLS:           ${YELLOW}none - traffic and API token travel in cleartext${NC}"
+    echo -e "               To add HTTPS later: set DOMAIN in .env, point an A"
+    echo -e "               record at ${SERVER_IP}, then re-run:"
+    echo -e "                 docker compose -f docker-compose.prod.yml up -d"
+fi
 echo -e "Executor:      ${GREEN}${EXECUTOR_TYPE}${NC}"
 echo ""
 echo -e "API Token:     ${YELLOW}${AUTH_TOKEN}${NC}"
@@ -187,6 +224,7 @@ echo -e "               (save this - you'll need it for API requests)"
 echo ""
 echo -e "Grafana:       http://localhost:3001 (via SSH tunnel)"
 echo -e "Grafana Pass:  ${YELLOW}${GRAFANA_PASSWORD}${NC}"
+echo -e "Metrics Token: ${YELLOW}${METRICS_TOKEN}${NC}"
 echo ""
 echo "Prometheus:    http://localhost:9090 (via SSH tunnel)"
 echo ""
@@ -194,9 +232,9 @@ echo "========================================"
 echo "  Quick Test"
 echo "========================================"
 echo ""
-echo "curl https://${DOMAIN}/health"
+echo "curl ${BASE_URL}/health"
 echo ""
-echo "curl -X POST https://${DOMAIN}/submissions?wait=true \\"
+echo "curl -X POST ${BASE_URL}/submissions?wait=true \\"
 echo "  -H 'Content-Type: application/json' \\"
 echo "  -H 'X-Auth-Token: ${AUTH_TOKEN}' \\"
 echo "  -d '{\"source_code\": \"print(1+1)\", \"language_id\": 71}'"
@@ -205,6 +243,6 @@ echo "========================================"
 echo "  Access Grafana via SSH Tunnel"
 echo "========================================"
 echo ""
-echo "ssh -L 3001:localhost:3001 user@${DOMAIN}"
+echo "ssh -L 3001:localhost:3001 user@${SERVER_IP}"
 echo "Then open: http://localhost:3001"
 echo ""

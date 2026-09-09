@@ -1,4 +1,9 @@
-{$DOMAIN:localhost} {
+# Site address. Set by docker-compose from DOMAIN in .env:
+#   DOMAIN unset/blank -> ":80"  -> plain HTTP on every IP, no certificate
+#   DOMAIN=example.com -> the domain -> automatic HTTPS via Let's Encrypt
+# Caddy only attempts a certificate when the address carries a hostname, so
+# the IP-only mode needs no DNS record and never touches port 443.
+{$SITE_ADDRESS::80} {
     # Prometheus metrics - token protected
     @metrics {
         path /metrics/*
