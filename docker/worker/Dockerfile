@@ -2,6 +2,9 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Upstream isolate release to build. Bump deliberately, never track HEAD.
+ARG ISOLATE_VERSION=v2.7
+
 # ── 1. System packages + language runtimes ──────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ \
@@ -9,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     ca-certificates curl gnupg \
     unzip bash time \
-    make git pkg-config libcap-dev libsystemd-dev \
+    make git pkg-config libcap-dev libsystemd-dev libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 1a. Judge0-compatible binary path symlinks ───────────────────────────────
@@ -42,7 +45,11 @@ RUN mkdir -p /usr/local/lib/java \
        -o /usr/local/lib/java/gson.jar
 
 # ── 4. Compile and install isolate (binaries only, skip man pages) ─────────
-RUN git clone --depth 1 https://github.com/ioi/isolate.git /tmp/isolate \
+# Pinned: this used to clone HEAD, so an upstream change silently broke the
+# image build. isolate needs libseccomp-dev (installed above) for the syscall
+# restriction support it gained before v2.6 -- without it the build dies with
+# "isolate.c: fatal error: seccomp.h: No such file or directory".
+RUN git clone --depth 1 --branch ${ISOLATE_VERSION} https://github.com/ioi/isolate.git /tmp/isolate \
     && cd /tmp/isolate \
     && make isolate isolate-cg-keeper \
     && cp isolate isolate-cg-keeper /usr/local/bin/ \
