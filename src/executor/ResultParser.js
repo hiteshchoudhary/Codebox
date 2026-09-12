@@ -41,8 +41,6 @@ class ResultParser {
     } else if (exitCode !== 0) {
       // Non-zero exit code
       status = getStatusById(11); // Runtime Error (NZEC)
-    } else {
-      status = getStatusById(12); // Runtime Error (Other)
     }
 
     // Truncate output if too long

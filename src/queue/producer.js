@@ -97,7 +97,12 @@ export async function getSubmission(token) {
   const data = await redis.get(`submission:${token}`);
   if (!data) return null;
 
-  return JSON.parse(data);
+  try {
+    return JSON.parse(data);
+  } catch {
+    logger.error({ event: 'corrupted_submission', token });
+    return null;
+  }
 }
 
 /**
