@@ -11,9 +11,28 @@ import routes from './routes/index.js';
 
 const app = express();
 
+// Trust proxy — needed for correct req.ip behind reverse proxies
+if (config.trustProxy) {
+  app.set('trust proxy', config.trustProxy);
+}
+
 // Security middleware
 app.use(helmet());
-app.use(cors());
+
+// CORS — restrict via ALLOWED_ORIGINS env var (comma-separated), or allow all if unset
+const corsOptions = config.cors.allowedOrigins.length > 0
+  ? {
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (config.cors.allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+    }
+  : {};
+app.use(cors(corsOptions));
 
 // Request parsing
 app.use(express.json({ limit: config.server.bodyLimit }));
